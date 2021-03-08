@@ -1,0 +1,443 @@
+---
+title: "Suicide Analysis"
+author: "Mayank Mohan Yadav"
+date: "10/12/2020"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r loadpackages, message=FALSE, warning=FALSE, include=FALSE}
+pacman::p_load(tidyverse,broom,rworldmap,countrycode,ggalt,gridExtra,caret,data.table,ggcorrplot,scales,ranger)
+
+theme_set(theme_classic())
+```
+
+#The World Health Organization reports that 800,000 people die by suicide each year worldwide, while suicide is the 10th leading cause of death in the United States. Suicide is a major global health problem. In addition to the enormous toll that suicide takes on individuals and families, a high suicide rate can be detrimental to the long-run growth of a society, particularly if mostly young people are affected. Let's take a look.
+
+#The data is provided by WHO and The World Bank.
+#Raw Data:
+
+
+```{r echo=FALSE}
+suicide <- read_csv("master.csv") 
+head(suicide,3)
+colnames(suicide)[7] = "suicide_rate"
+
+suicide <- suicide %>% 
+  select(-c(`HDI for year`)) %>% 
+  rename(gdp_for_year = `gdp_for_year ($)`, 
+         gdp_per_capita = `gdp_per_capita ($)`,
+         country_year = `country-year`) %>%
+  as.data.frame()
+#glimpse(suicide)
+
+suicide <- suicide %>%
+  filter(year != 2016) %>%    #data for 2016 for many countries are incomplete hence removing
+  select(-country_year)       #column not useful
+#glimpse(suicide)
+
+minimum_years <- suicide %>% #finding out number of rows available country-wise
+  group_by(country) %>%      #and for how many minimum years
+  summarize(rows = n(), 
+            years = rows / 12) %>%
+  arrange(years)
+ #head(minimum_years,20)      #analysing minimum year data available
+
+suicide <- suicide %>%       #removing top 7 countries because they have less than 5 years data
+  filter(!(country %in% head(minimum_years$country, 7)))  #will not visualize properly
+
+```
+
+
+#Cleaned data: removed missing rows and columns, tidied up column names, created new column continents using countrycode function, and removed unusable columns
+
+
+```{r echo=FALSE}
+suicide$age <- gsub(" years", "", suicide$age) #removing "years" substring from age column to make it cleaner
+suicide$sex <- ifelse(suicide$sex == "male", "Male", "Female") # punctuating labels
+
+
+# translating countries to continents using countrycode library
+suicide$continent <- countrycode(sourcevar = suicide[, "country"],
+                              origin = "country.name",
+                              destination = "continent")
+
+# changing to factors
+temp <- c('country', 'sex', 'continent')
+suicide[temp] <- lapply(suicide[temp], function(x){factor(x)})
+
+
+# Making age ordinal
+suicide$age <- factor(suicide$age, 
+                   ordered = T, 
+                   levels = c("5-14","15-24","25-34", "35-54", "55-74", "75+"))
+
+# Making generation ordinal
+suicide$generation <- factor(suicide$generation, 
+                   ordered = T, 
+                   levels = c("G.I. Generation", "Silent","Boomers", "Generation X", "Millenials", "Generation Z"))
+
+#suicide <- as_tibble(suicide)
+# the global rate of suicides over years
+global_average <- (sum(as.numeric(suicide$suicides_no)) / sum(as.numeric(suicide$population))) * 100000
+
+
+#glimpse(suicide)
+head(suicide,10)
+```
+
+#The overall trend is decreasing which is a good thing but given the limited data collection techniques and tools (lets say pre 1990) cannot really be too trusting of this data. The world saw a peak in the rate of suicides in 1995
+
+```{r echo=FALSE}
+suicide %>%
+  group_by(year) %>%
+  summarize(population=sum(population),
+            suicides=sum(suicides_no),
+            suicidesper100k=(suicides/population)*100000) %>%
+  ggplot(aes(x=year,y=suicidesper100k))+
+  geom_line(col='red',size=1)+
+  geom_point(col='blue',size=2)+
+  geom_hline(yintercept = global_average,linetype=2,color="black",size=1)+
+  labs(title = "Global Suicides over 100k population",
+       subtitle="Trend over 1985-2015",
+       x="Year",
+       y="Suicides per 100k")+
+  scale_x_continuous(breaks = seq(1985,2015,2))+
+  scale_y_continuous(breaks=seq(10,20))
+```
+
+#Countries in the continent of Africa report a suicide rate of 0 after 1995 which may actually not be the case and it might be that the governments have not properly collected and reported the data to the World Bank and WHO. Trends of continents Americas and Oceania are on the rise which is concerning but even more concerning is the suicide rate of European countries through the years. They are literally on a different scale.
+
+```{r echo=FALSE}
+continent <- suicide %>%
+  group_by(continent) %>%
+  summarize(suicideper100k = (sum(as.numeric(suicides_no)) / sum(as.numeric(population))) * 100000) %>%
+  arrange(suicideper100k)
+
+continent$continent <- factor(continent$continent, ordered = T, levels = continent$continent)
+
+continent_plot <- ggplot(continent, aes(x = continent, y = suicideper100k)) + 
+  geom_bar(stat = "identity") + 
+  labs(title = "Global Suicides (per 100k), by Continent",
+  x = "Continent", 
+  y = "Suicides per 100k") +
+  theme(legend.position = "none", title = element_text(size = 10)) + 
+  scale_y_continuous(breaks = seq(0, 20, 1), minor_breaks = F)
+
+
+continent_time <- suicide %>%
+  group_by(year, continent) %>%
+  summarize(suicide_per_100k = (sum(as.numeric(suicides_no)) / sum(as.numeric(population))) * 100000)
+
+continent_time$continent <- factor(continent_time$continent, ordered = T, levels = continent$continent)
+
+continent_time_plot <- ggplot(continent_time, aes(x = year, y = suicide_per_100k)) + 
+  facet_grid(continent ~ ., scales = "free_y") + 
+  geom_line() + 
+  geom_point() + 
+  labs(title = "Trends Over Time, by Continent", 
+       x = "Year", 
+       y = "Suicides per 100k") + 
+  theme(legend.position = "none", title = element_text(size = 10)) + 
+  scale_x_continuous(breaks = seq(1985, 2015, 5), minor_breaks = F)
+
+grid.arrange(continent_plot, continent_time_plot, ncol = 2) #above plots side by side 
+```
+
+
+#The gender stereotype of men being 'tough' and 'strong' does not allow for failure. We see a very clear over-representation of men here. Even with these decreasing trends by the end of 2015 global average of suicides for men is 18/100k population compared to 5.2 for women. A staggering difference. 
+
+```{r echo=FALSE}
+sex_plot <- suicide %>%
+  group_by(sex) %>%
+  summarize(suicideper100k = (sum(as.numeric(suicides_no)) / sum(as.numeric(population))) * 100000) %>%
+ggplot(aes(x = sex, y = suicideper100k)) + 
+  geom_bar(stat = "identity") + 
+  labs(title = "Global suicides (per 100k), by Sex",
+       x = "Sex", 
+       y = "Suicides per 100k") +
+  theme(legend.position = "none") + 
+  scale_y_continuous(breaks = seq(0, 25), minor_breaks = F)
+
+### with time
+sex_time_plot <- suicide %>%
+  group_by(year, sex) %>%
+  summarize(suicideper100k = (sum(as.numeric(suicides_no)) / sum(as.numeric(population))) * 100000) %>%
+  ggplot(aes(x = year, y = suicideper100k)) + 
+  facet_grid(sex ~ ., scales = "free_y") + 
+  geom_line() + 
+  geom_point() + 
+  labs(title = "Trends Over Time, by Sex", 
+       x = "Year", 
+       y = "Suicides per 100k", 
+       color = "Sex") + 
+  theme(legend.position = "none") + 
+  scale_x_continuous(breaks = seq(1985, 2015, 5), minor_breaks = F)
+
+grid.arrange(sex_plot, sex_time_plot, ncol = 2)
+
+#head(suicide %>%
+  #group_by(sex),10)
+```
+
+#Through the years we are seeing a decrease in suicidal patterns across all age groups but one thing can be established-as age of a person increases the suicidal tendencies increase
+
+
+```{r echo=FALSE}
+age_plot <- suicide %>%
+  group_by(age) %>%
+  summarize(suicideper100k = (sum(as.numeric(suicides_no)) / sum(as.numeric(population))) * 100000) %>%
+  ggplot(aes(x = age, y = suicideper100k)) + 
+  geom_bar(stat = "identity") + 
+  labs(title = "Global suicides per 100k, by Age",
+       x = "Age", 
+       y = "Suicides per 100k") +
+  theme(legend.position = "none") + 
+  scale_y_continuous(breaks = seq(0, 30, 1), minor_breaks = F)
+
+### with time
+age_time_plot <- suicide %>%
+  group_by(year, age) %>%
+  summarize(suicideper100k = (sum(as.numeric(suicides_no)) / sum(as.numeric(population))) * 100000) %>%
+  ggplot(aes(x = year, y = suicideper100k)) + 
+  facet_grid(age ~ ., scales = "free_y") + 
+  geom_line() + 
+  geom_point() + 
+  labs(title = "Trends Over Time, by Age", 
+       x = "Year", 
+       y = "Suicides per 100k", 
+       color = "Age") + 
+  theme(legend.position = "none") + 
+  scale_x_continuous(breaks = seq(1985, 2015, 5), minor_breaks = F)
+
+
+grid.arrange(age_plot, age_time_plot, ncol = 2)
+```
+
+#The suicide rate of Lithuania is concerning, but even more concerning is that a large number of European countries make up half of the chart, that too on the higher end. Suicide in Lithuania is such a big concern that it has it's own Wiki page. Sociologists explain it as Lithuania being exposed to new and unfamiliar social environment after the collapse of USSR that started in 1988. Suicide rates of many European countries peak in in the early 1900's and show a steady decline post 1995. The social and economic factors of the post USSR dissolution era must have played a major role in European suicides.
+
+```{r echo=FALSE}
+country <- suicide %>%
+  group_by(country, continent) %>%
+  summarize(n = n(), 
+            suicide_per_100k = (sum(as.numeric(suicides_no)) / sum(as.numeric(population))) * 100000) %>%
+  arrange(desc(suicide_per_100k))
+
+country$country <- factor(country$country, 
+                          ordered = T, 
+                          levels = rev(country$country))
+
+ggplot(country, aes(x = country, y = suicide_per_100k, fill = continent)) + 
+  geom_bar(stat = "identity") + 
+  geom_hline(yintercept = global_average, linetype = 2, color = "grey35", size = 1) +
+  labs(title = "Global suicides per 100k, by Country",
+       x = "Country", 
+       y = "Suicides per 100k", 
+       fill = "Continent") +
+  coord_flip() +
+  scale_y_continuous(breaks = seq(0, 45, 2)) + 
+  theme(legend.position = "bottom")
+```
+
+#I fit a linear model to explain the rate of change in suicide rate per year.
+#The following is the **rate of change**, not the absolute value of change; hence we don't see Lithuania at the top, instead Lithuania has a decreasing rate of change which is a good thing. On the other hand 16 countries have an increasing rate of change, with Republic of Korea and Guyana observing 1 more suicide every year!
+
+```{r echo=FALSE}
+country_year <- suicide %>%
+  group_by(country, year) %>%
+  summarize(suicides = sum(suicides_no), 
+            population = sum(population), 
+            suicideper100k = (suicides / population) * 100000, 
+            gdp_per_capita = mean(gdp_per_capita))
+
+
+country_year_trends <- country_year %>%
+  ungroup() %>%
+  nest(-country) %>% # excluding all columns except country
+  mutate(model = map(data, ~ lm(suicideper100k ~ year, data = .)), # fitting a linear model from lm's calling environment; applying function to each element
+         tidied = map(model, tidy)) %>% # applying above model to each element
+  unnest(tidied)
+
+country_year_sig_trends <- country_year_trends %>%
+  filter(term == "year") %>%
+  mutate(p.adjusted = p.adjust(p.value)) %>%
+  filter(p.adjusted < .05) %>%
+  arrange(estimate)
+
+country_year_sig_trends$country <- factor(country_year_sig_trends$country, 
+                                          ordered = T, 
+                                          levels = country_year_sig_trends$country)
+
+ggplot(country_year_sig_trends, aes(x=country, y=estimate, col = estimate)) + 
+  geom_point(stat='identity', size = 4) +
+  geom_hline(yintercept = 0, col = "black", size = 2) +
+  scale_color_gradient(low = "green", high = "red") +
+  geom_segment(aes(y = 0, 
+                   x = country, 
+                   yend = estimate, 
+                   xend = country), size = 1) +
+  labs(title="Change per year (Suicides per 100k)", 
+       subtitle="Of countries with significant trends (p < 0.05)", 
+       x = "Country", y = "Change Per Year (Suicides per 100k)") +
+  scale_y_continuous(breaks = seq(-2, 2, 0.2), limits = c(-1.5, 1.5)) +
+  theme(legend.position = "none") +
+  coord_flip()
+
+```
+
+#Before we establish any relationship between GDP and suicide rates, we need to establish a correlation between the GDP of a country with years. If in fact the GDP of countries increase with time, only then would there be any meaningful interpretation of GDP and suicide rates. On  observing the p-value we note that almost all countries have a very strong positive correlation for year and GDP(per capita)
+
+```{r echo=FALSE}
+#correlation b/w year and gdp
+country_year_gdp <- suicide %>%
+  group_by(country, year) %>%
+  summarize(gdp_per_capita = mean(gdp_per_capita))
+  
+country_year_gdp_corr <- country_year_gdp %>%
+  ungroup() %>%
+  group_by(country) %>%
+  summarize(year_gdp_correlation = cor(year, gdp_per_capita))
+
+country_year_gdp_corr
+```
+
+#I see a weak positive linear relationship between GDP and suicide_rate; but the regression line does not represent the data which is to be expected because datapoints are scattered all over the place; the data is very skewed towards European suicide rates; nevertheless countries with high GDP might actually be associated with higher suicide_rate.
+
+```{r echo=FALSE}
+#calculating mean gdp per capita by country and plotting against suicide_rate of that country
+country_mean_gdp<-suicide %>%
+  group_by(country,continent) %>%
+  summarize(suicide_rate = (sum(as.numeric(suicides_no))/sum(as.numeric(population)))*100000, 
+            gdp_per_capita = mean(gdp_per_capita))
+
+ggplot(country_mean_gdp,aes(x=gdp_per_capita,y=suicide_rate,col=continent)) + 
+  geom_point() + 
+  geom_smooth(method = "lm", aes(group = 1)) + 
+  scale_x_continuous(labels=scales::dollar_format(prefix="$"),breaks = seq(0,70000,10000)) + 
+  labs(title="Correlation between GDP (per capita) and Suicides per 100k", 
+       subtitle="Plot containing every country",
+       x="GDP (per capita)", 
+       y="Suicides per 100k", 
+       col="Continent") 
+```
+
+#GDP is not really capturing the variation in suicide_rate; suicide_rate is not VERY depedent on GDP and varies across countries hence cannot say that if a country has higher GDP it will definitely observe fewer suicides
+
+#What we really want is to capture the trend of global suicide rates without the data being so skewed; I am calculating and removing high values of Cooks distance (will help make data less skewed) for suicide rates so that abnormally high values if countries like Lithuania are removed
+#Although this is an improved attempt at fitting a regression line, it does not make a whole lot of difference like i thought it would, but we do see a better fitted regression line
+
+#One thing that is for certain though is that with GDP increase we do see a positive linear increase in suicide_rate; i personally found it counter-intuitive
+
+```{r echo=FALSE}
+
+model1 <- lm(suicide_rate ~ gdp_per_capita, data = country_mean_gdp)
+
+gdp_suicide_normalized <- model1 %>%
+  augment() %>%
+  arrange(desc(.cooksd)) %>%
+  filter(.cooksd < 4/nrow(.)) %>% # removes 5/93 countries
+  inner_join(country_mean_gdp, by = c("suicide_rate", "gdp_per_capita")) %>%
+  select(country, continent, gdp_per_capita, suicide_rate)
+
+
+ggplot(gdp_suicide_normalized, aes(x = gdp_per_capita, y = suicide_rate, col = continent)) + 
+  geom_point() + 
+  geom_smooth(method = "lm", aes(group = 1)) + 
+  scale_x_continuous(labels=scales::dollar_format(prefix="$"), breaks = seq(0, 70000, 10000)) + 
+  labs(title = "Correlation between GDP (per capita) and Suicides per 100k", 
+       subtitle = "Plot with high CooksD countries removed (5/93 total)",
+       x = "GDP (per capita)", 
+       y = "Suicides per 100k", 
+       col = "Continent") + 
+  theme(legend.position = "none")
+```
+
+
+
+```{r include=FALSE}
+# transforming target variable suicide_rate_log as a function of other 7 variables for formula for linear and random forest models
+#transforming suicide_rate to log becuase data is not normally distributed
+
+vars <- c("continent", "population", "country", "sex", "year", "age", "gdp_per_capita")
+outcome <- "suicide_rate_log"
+(f <- as.formula(paste(outcome, "~", paste(vars, collapse = " + "))))
+
+
+suicide <- suicide %>%
+  mutate(suicide_rate_log=log(1+suicide_rate)) #+1 because log 0 is infinite, suicide_rate has 0 as well
+```
+
+
+```{r include=FALSE}
+# Split to training and testing datasets
+set.seed(123, sample.kind="Rounding") #to make samples non-uniform on large populations
+test_index <- createDataPartition(y = suicide$suicide_rate_log, times = 1, p = 0.2, list = FALSE)
+train <- suicide[-test_index,]
+test <- suicide[test_index,]
+
+```
+
+```{r include=FALSE}
+# fitting linear regression model
+lm1 <- train %>% 
+  lm(f, data=.) #using the formula described above; data taken from f(lm's calling environment)
+
+```
+
+```{r include=FALSE}
+set.seed(123, sample.kind="Rounding")
+#ranger particularly suited for high dimensional data
+rf1 <- ranger(f,train,num.trees = 100, respect.unordered.factors = "order",seed = 123)
+```
+
+#https://rstudio-pubs-static.s3.amazonaws.com/484548_f68efb9b21244a4099f34114a2ca7218.html#root-mean-squared-error-rmse
+#rmse to evaluate the model performance
+
+#https://tidyr.tidyverse.org/reference/gather.html
+#gather to create key-value pairs for comparision between both models
+
+#RMSE of random forest is better than linear model by double which is understandable given that linear models do not fit well with dataframes having many dimensions as is the case here.
+
+```{r echo=FALSE}
+# Generating predictions using the test data
+test$linear_regression <- predict(lm1, newdata = test)
+test$random_forest <- predict(rf1, test)$predictions
+
+
+
+#calculating RMSE
+c1 <- test %>% gather(key=model, value=log_pred, linear_regression, random_forest) %>%
+  mutate(pred=exp(log_pred),
+         residuals=suicide_rate-pred) %>%
+  group_by(model) %>%
+  summarize(rmse=sqrt(mean(residuals^2)))
+c1
+
+```
+
+#Random forest (predicted values grouped by year) are very closely aligned with the test data predicted values grouped by year and hence is better(and possibly the best)than a linear model
+
+#I chose RF because i did not have to do any feature scaling (no standardization or normalization as such except the log transformation); it automatically handles missing data and is less impacted by noise; even if we treat abnormal values of suicide_rate for European countries as outliers the prediction is very good
+
+```{r echo=FALSE}
+test %>% mutate(linear_regression=exp(linear_regression), random_forest=exp(random_forest)) %>%
+  gather(key=valuetype, value=rate, suicide_rate, linear_regression, random_forest) %>%
+  mutate(suicides=rate*population/100000) %>%
+  group_by(year, valuetype) %>%
+  mutate(rate_year=sum(suicides)*100000/sum(population)) %>%
+  ggplot(aes(year, rate_year, col=valuetype)) +
+  geom_line() +
+  geom_point(size = 2) +
+  scale_x_continuous(breaks = seq(1985, 2016, 2)) +
+  theme(axis.text.x = element_text(angle = 90))
+```
+
+
+#This RF model can also be made sensitive to dimensions like unemployement rate or number of jobs created per year/month in a country and we could potentially very accurately predict what effect changes in such dimensions would have on suicide rates.
+
+
